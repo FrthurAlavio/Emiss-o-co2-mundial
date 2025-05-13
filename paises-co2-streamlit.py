@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 # Título do app
 st.title("📊 Comparador Global de Emissões de CO₂")
-
+st.subheader(' dados de Our world in Data')
 # Carrega os dados
 @st.cache_data
 def carregar_dados():
@@ -56,8 +56,8 @@ else:
         v1 = df1[df1['country'] == pais]['co2'].values[0]
         v2 = df2[df2['country'] == pais]['co2'].values[0]
         st.write(f"**{pais}**:")
-        st.write(f"- Em {ano1}: {round(v1)} Mt ({round(v1/media1, 2)}x a média global)")
-        st.write(f"- Em {ano2}: {round(v2)} Mt ({round(v2/media2, 2)}x a média global)")
+        st.write(f"- Em {ano1}: {round(v1)} Milhões de Tonelas ({round(v1/media1, 2)}x a média global)")
+        st.write(f"- Em {ano2}: {round(v2)} Milhões de Toneladas ({round(v2/media2, 2)}x a média global)")
         dif = v2 - v1
         if dif > 0:
             st.success(f"Aumento de {round(dif)} Mt entre {ano1} e {ano2}")
@@ -65,13 +65,3 @@ else:
             st.warning(f"Redução de {round(abs(dif))} Mt entre {ano1} e {ano2}")
         else:
             st.info("Sem variação entre os anos")
-
-# RANKING GLOBAL
-st.subheader(f"🌍 Top 10 países que mais emitiram CO₂ em {ano2}")
-top10 = df_ano2[['country', 'co2']].dropna().sort_values(by='co2', ascending=False).head(10)
-
-fig2, ax2 = plt.subplots()
-ax2.barh(top10['country'][::-1], top10['co2'][::-1], color='salmon')
-ax2.set_xlabel("Emissões de CO₂ (milhões de toneladas)")
-ax2.set_title(f"Top 10 países emissores em {ano2}")
-st.pyplot(fig2)
