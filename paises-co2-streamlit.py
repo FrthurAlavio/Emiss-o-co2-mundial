@@ -1,10 +1,14 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
-from PIL import Image
 import matplotlib.pyplot as plt
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
+import numpy as np
+from matplotlib.cm import get_cmap
+import country_converter as coco
+import geopandas as gpd
+from folium.features import GeoJsonTooltip
 
 # Configuração da página
 st.set_page_config(
@@ -13,506 +17,370 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS personalizado para melhorar a aparência
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1e88e5;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .subheader {
-        font-size: 1.5rem;
-        color: #424242;
-        margin-bottom: 1rem;
-    }
-    .chart-container {
-        background-color: #f5f5f5;
-        border-radius: 10px;
-        padding: 1rem;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .metric-card {
-        background-color: #f9f9f9;
-        border-radius: 5px;
-        padding: 1rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-        margin-bottom: 1rem;
-    }
-    .footnote {
-        font-size: 0.8rem;
-        color: #757575;
-        font-style: italic;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # Título e descrição do app
-st.markdown("<h1 class='main-header'>🌍 Comparador Global de Emissões de CO₂</h1>", unsafe_allow_html=True)
+st.title("🌍 Comparador Global de Emissões de CO₂")
+st.markdown("""
+Este aplicativo permite comparar as emissões de CO₂ entre diferentes países e anos.
+Os dados são fornecidos pela Our World in Data.
+""")
+st.link_button("Fonte dos dados (em inglês)", "https://ourworldindata.org/co2-and-greenhouse-gas-emissions?utm_source=pocket_shared")
 
-col_intro1, col_intro2 = st.columns([3, 1])
-with col_intro1:
-    st.markdown("""
-    Esta aplicação permite visualizar e comparar as emissões de CO₂ entre diferentes países e anos.
-    Explore os dados através de mapas interativos e gráficos comparativos.
-    """)
-with col_intro2:
-    st.markdown("<p class='footnote'>Dados de:</p>", unsafe_allow_html=True)
-    st.link_button("Our World in Data", "https://ourworldindata.org/co2-and-greenhouse-gas-emissions")
-
-# Função para carregar dados com cache
+# Função para carregar e processar os dados
 @st.cache_data
 def carregar_dados():
+    """Carrega e prepara os dados para análise"""
     try:
         caminho_arquivo = 'owid-co2-data.csv'
         df = pd.read_csv(caminho_arquivo)
-        # Garantir que colunas importantes estejam presentes
-        required_columns = ['country', 'year', 'co2', 'iso_code']
-        for col in required_columns:
-            if col not in df.columns:
-                if col == 'iso_code':
-                    # Criar mapeamento de países para códigos ISO se não existir
-                    df['iso_code'] = df['country'].map(get_country_codes())
-                else:
-                    st.error(f"Coluna {col} não encontrada no arquivo de dados.")
-        return df
+        
+        # Garantir que estamos trabalhando apenas com países (não regiões)
+        # e remover registros com dados ausentes de CO2
+        df_paises = df[~df['country'].isin(['World', 'International transport'])]
+        df_paises = df_paises.dropna(subset=['co2'])
+        
+        # Adicionar códigos ISO para uso no mapa
+        cc = coco.CountryConverter()
+        df_paises['iso_code'] = df_paises['country'].apply(
+            lambda x: cc.convert(names=[x], to='ISO3', not_found=None)
+        )
+        
+        return df_paises
     except Exception as e:
         st.error(f"Erro ao carregar dados: {e}")
-        # Retornar DataFrame vazio com estrutura base se houver erro
-        return pd.DataFrame(columns=['country', 'year', 'co2', 'iso_code'])
+        return pd.DataFrame()
 
-# Função para obter códigos ISO de países (usado se não estiverem no dataset)
-def get_country_codes():
-    # Dicionário básico de mapeamento país -> código ISO
-    # Na implementação completa, isso poderia ser um arquivo CSV separado
-    return {
-        'World': 'OWID_WRL', 'United States': 'USA', 'China': 'CHN', 
-        'India': 'IND', 'Russia': 'RUS', 'Brazil': 'BRA', 
-        'Germany': 'DEU', 'United Kingdom': 'GBR', 'France': 'FRA',
-        'Japan': 'JPN', 'Canada': 'CAN', 'Australia': 'AUS',
-        # Adicionar mais mapeamentos conforme necessário
-    }
-
-# Carregar os dados
-with st.spinner('Carregando dados...'):
+# Carregando os dados
+with st.spinner("Carregando dados..."):
     df = carregar_dados()
 
-# Verificar se os dados foram carregados corretamente
+# Verificando se os dados foram carregados corretamente
 if df.empty:
-    st.error("Não foi possível carregar os dados. Verifique se o arquivo 'owid-co2-data.csv' está disponível.")
+    st.error("Não foi possível carregar os dados. Verifique o arquivo 'owid-co2-data.csv'.")
     st.stop()
 
-# Limpeza e preparação dos dados
-def limpar_dados(df):
-    # Remover linhas com valores ausentes nas colunas essenciais
-    df_clean = df.dropna(subset=['country', 'year', 'co2'])
-    
-    # Converter ano para inteiro
-    df_clean['year'] = df_clean['year'].astype(int)
-    
-    # Garantir que a coluna CO2 seja numérica
-    df_clean['co2'] = pd.to_numeric(df_clean['co2'], errors='coerce')
-    
-    # Filtrar para incluir apenas países (remover agregações)
-    excludes = ['World', 'International Transport', 'EU-27', 'EU-28']
-    df_countries = df_clean[~df_clean['country'].isin(excludes)]
-    
-    return df_clean, df_countries
+# Carregar dados geográficos dos países
+@st.cache_data
+def carregar_geodata():
+    """Carrega os dados geográficos dos países"""
+    try:
+        # Usar o geopandas com dados naturais da Terra
+        world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+        # Converter códigos para ISO3 para compatibilidade
+        world['iso_a3'] = world['iso_a3'].apply(
+            lambda x: coco.convert(names=[x], to='ISO3', not_found=None) if x != '-99' else None
+        )
+        return world
+    except Exception as e:
+        st.error(f"Erro ao carregar dados geográficos: {e}")
+        return gpd.GeoDataFrame()
 
-df_clean, df_countries = limpar_dados(df)
+# Carregando geodata
+world_gdf = carregar_geodata()
 
-# Lista de anos disponíveis
-anos_disponiveis = sorted(df_clean['year'].unique())
+# Barra lateral para controles
+st.sidebar.header("📊 Configurações")
+
+# Anos disponíveis para seleção
+anos_disponiveis = sorted(df['year'].dropna().unique())
 anos_validos = [ano for ano in anos_disponiveis if ano >= 1990]
 
-# Interface do usuário com tabs para organizar o conteúdo
-tab1, tab2, tab3 = st.tabs(["📊 Comparação Entre Anos", "🗺️ Mapa Global", "📈 Tendências Históricas"])
+# Seleção de dois anos para comparação
+ano1 = st.sidebar.selectbox(
+    "Ano base:",
+    anos_validos,
+    index=len(anos_validos)-10  # Default para 10 anos atrás
+)
+
+ano2 = st.sidebar.selectbox(
+    "Ano para comparação:",
+    anos_validos,
+    index=len(anos_validos)-1   # Default para o ano mais recente
+)
+
+# Filtrar dados para os anos selecionados
+df_ano1 = df[df['year'] == ano1]
+df_ano2 = df[df['year'] == ano2]
+
+# Encontrar países com dados disponíveis em ambos os anos
+paises_comuns = sorted(set(df_ano1['country']).intersection(set(df_ano2['country'])))
+
+# Opção para filtrar por continente
+continentes = ['Todos'] + sorted(world_gdf['continent'].dropna().unique().tolist())
+continente_selecionado = st.sidebar.selectbox("Filtrar por continente:", continentes)
+
+# Filtrar países por continente
+if continente_selecionado != 'Todos':
+    paises_no_continente = world_gdf[world_gdf['continent'] == continente_selecionado]['name'].tolist()
+    paises_comuns = [p for p in paises_comuns if p in paises_no_continente]
+
+# Calcular médias globais para os anos selecionados
+media1 = df_ano1['co2'].mean()
+media2 = df_ano2['co2'].mean()
+
+# Informações sobre médias globais
+st.sidebar.markdown("### 🌐 Médias Globais de Emissão")
+st.sidebar.info(f"**{ano1}**: {round(media1, 2)} Mt CO₂")
+st.sidebar.info(f"**{ano2}**: {round(media2, 2)} Mt CO₂")
+
+# Mudança percentual na média global
+mudanca_percentual = ((media2 - media1) / media1) * 100
+if mudanca_percentual > 0:
+    st.sidebar.warning(f"↗️ Aumento de {round(mudanca_percentual, 1)}% na média global")
+else:
+    st.sidebar.success(f"↘️ Redução de {round(abs(mudanca_percentual), 1)}% na média global")
+
+# Seleção de países para comparação detalhada
+paises_selecionados = st.multiselect(
+    "Escolha países para comparação detalhada:",
+    paises_comuns,
+    default=paises_comuns[:3] if len(paises_comuns) > 3 else paises_comuns
+)
+
+# Criação das abas para diferentes visualizações
+tab1, tab2, tab3 = st.tabs(["🗺️ Mapa de Emissões", "📊 Comparação entre Anos", "📈 Análise Detalhada"])
 
 with tab1:
-    st.markdown("<h2 class='subheader'>Comparação de Emissões entre Anos</h2>", unsafe_allow_html=True)
+    st.header(f"Mapa Global de Emissões de CO₂ - {ano2}")
     
-    # Seleção de dois anos para comparação
-    col1, col2 = st.columns(2)
-    with col1:
-        ano1 = st.selectbox("Escolha o 1º ano:", anos_validos, index=len(anos_validos)-5)
-    with col2:
-        ano2 = st.selectbox("Escolha o 2º ano para comparar:", anos_validos, index=len(anos_validos)-1)
+    # Preparar dados para o mapa
+    mapa_df = df_ano2[['country', 'iso_code', 'co2']].copy()
+    mapa_df = mapa_df[~mapa_df['iso_code'].isna()]  # Remover países sem código ISO
     
-    # Filtrar países com dados em ambos os anos
-    df_ano1 = df_clean[df_clean['year'] == ano1]
-    df_ano2 = df_clean[df_clean['year'] == ano2]
-    paises_comuns = sorted(set(df_ano1['country']).intersection(set(df_ano2['country'])))
+    # Mesclar com dados geográficos
+    mapa_geo = world_gdf.merge(mapa_df, left_on='iso_a3', right_on='iso_code', how='left')
     
-    # Adicionar opção de filtro por continente/região
-    if 'continent' in df_clean.columns:
-        continentes = ['Todos'] + sorted(df_clean['continent'].dropna().unique().tolist())
-        continente_selecionado = st.selectbox("Filtrar por continente:", continentes)
-        
-        if continente_selecionado != 'Todos':
-            paises_filtrados = df_clean[df_clean['continent'] == continente_selecionado]['country'].unique()
-            paises_comuns = [p for p in paises_comuns if p in paises_filtrados]
+    # Normalizar os dados para coloração
+    vmin, vmax = mapa_geo['co2'].min(), mapa_geo['co2'].max()
     
-    # Adicionar campo de busca para facilitar seleção de países
-    pais_busca = st.text_input("Buscar país:", "")
-    if pais_busca:
-        paises_filtrados = [p for p in paises_comuns if pais_busca.lower() in p.lower()]
-        if not paises_filtrados:
-            st.info("Nenhum país encontrado com esse termo.")
-            paises_selecionados = st.multiselect("Escolha países para comparar:", paises_comuns)
-        else:
-            paises_selecionados = st.multiselect("Escolha países para comparar:", paises_comuns, default=paises_filtrados[:5])
-    else:
-        paises_sugeridos = ['Brazil', 'United States', 'China', 'India', 'Germany']
-        paises_default = [p for p in paises_sugeridos if p in paises_comuns]
-        paises_selecionados = st.multiselect("Escolha países para comparar:", paises_comuns, default=paises_default[:3])
+    # Criar o mapa base com folium
+    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB positron")
     
+    # Criar escala de cores
+    colormap = get_cmap('YlOrRd')
+    
+    # Função para determinar a cor com base na emissão
+    def get_color(emissao):
+        if pd.isna(emissao):
+            return '#CCCCCC'  # Cinza para dados ausentes
+        norm_emissao = (emissao - vmin) / (vmax - vmin) if vmax > vmin else 0
+        rgba = colormap(norm_emissao)
+        return f'#{int(rgba[0]*255):02x}{int(rgba[1]*255):02x}{int(rgba[2]*255):02x}'
+    
+    # Adicionar camada GeoJson com coloração por emissão
+    folium.GeoJson(
+        mapa_geo.to_json(),
+        style_function=lambda feature: {
+            'fillColor': get_color(feature['properties']['co2']),
+            'color': 'black',
+            'weight': 0.5,
+            'fillOpacity': 0.7
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=['name', 'co2'],
+            aliases=['País:', 'Emissão (Mt CO₂):'],
+            localize=True,
+            sticky=False,
+            labels=True
+        )
+    ).add_to(m)
+    
+    # Adicionar legenda ao mapa
+    legend_html = '''
+    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white; 
+                padding: 10px; border: 1px solid grey; border-radius: 5px;">
+    <p style="text-align: center; margin-bottom: 5px;"><b>Emissões de CO₂ (Mt)</b></p>
+    <div style="display: flex; flex-direction: column; gap: 5px;">
+    '''
+    
+    # Criar faixas para a legenda
+    ranges = np.linspace(vmin, vmax, 5)
+    for i in range(len(ranges)-1):
+        color = get_color((ranges[i] + ranges[i+1]) / 2)
+        legend_html += f'''
+        <div style="display: flex; align-items: center;">
+        <div style="width: 20px; height: 20px; background-color: {color};"></div>
+        <span style="margin-left: 5px;">{int(ranges[i])} - {int(ranges[i+1])}</span>
+        </div>
+        '''
+    
+    legend_html += '''
+    </div>
+    </div>
+    '''
+    
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    # Exibir o mapa no Streamlit
+    st_folium(m, width=1200, height=600)
+
+with tab2:
     if not paises_selecionados:
-        st.info("Selecione pelo menos um país para comparar.")
+        st.info("Selecione pelo menos um país acima para visualizar comparações.")
     else:
-        # Calcular médias globais para os anos selecionados
-        dados_mundo1 = df_ano1[df_ano1['country'] == 'World']
-        dados_mundo2 = df_ano2[df_ano2['country'] == 'World']
+        st.header(f"Comparação das Emissões de CO₂ entre {ano1} e {ano2}")
         
-        if not dados_mundo1.empty and not dados_mundo2.empty:
-            media1 = dados_mundo1['co2'].values[0]
-            media2 = dados_mundo2['co2'].values[0]
-        else:
-            media1 = df_ano1['co2'].mean()
-            media2 = df_ano2['co2'].mean()
-        
-        # Criar dataframes para os países selecionados
+        # Filtrar dados para os países selecionados
         df1 = df_ano1[df_ano1['country'].isin(paises_selecionados)]
         df2 = df_ano2[df_ano2['country'].isin(paises_selecionados)]
         
-        # Gráfico de comparação usando Plotly (mais interativo)
-        st.markdown("<div class='chart-container'>", unsafe_allow_html=True)
-        fig = go.Figure()
+        # Criar gráfico de barras comparativas
+        fig, ax = plt.subplots(figsize=(12, 8))
         
-        # Adicionar barras para cada ano
-        fig.add_trace(go.Bar(
-            x=df1['country'],
-            y=df1['co2'],
-            name=f'Emissões em {ano1}',
-            marker_color='#1e88e5'
-        ))
+        # Ordenar países por emissão no ano mais recente
+        ordem_paises = df2.sort_values('co2', ascending=False)['country'].tolist()
+        df1 = df1.set_index('country').reindex(ordem_paises).reset_index()
+        df2 = df2.set_index('country').reindex(ordem_paises).reset_index()
         
-        fig.add_trace(go.Bar(
-            x=df2['country'],
-            y=df2['co2'],
-            name=f'Emissões em {ano2}',
-            marker_color='#43a047'
-        ))
+        x = np.arange(len(paises_selecionados))
+        width = 0.35
         
-        # Adicionar linhas para médias globais
-        fig.add_trace(go.Scatter(
-            x=df1['country'], 
-            y=[media1] * len(df1),
-            mode='lines',
-            name=f'Média Global {ano1} ({round(media1, 1)} Mt)',
-            line=dict(color='blue', dash='dash')
-        ))
+        # Barras para cada ano
+        bars1 = ax.bar(x - width/2, df1['co2'], width, label=f'{ano1}', color='steelblue')
+        bars2 = ax.bar(x + width/2, df2['co2'], width, label=f'{ano2}', color='firebrick')
         
-        fig.add_trace(go.Scatter(
-            x=df1['country'], 
-            y=[media2] * len(df1),
-            mode='lines',
-            name=f'Média Global {ano2} ({round(media2, 1)} Mt)',
-            line=dict(color='green', dash='dash')
-        ))
+        # Linhas de média global
+        ax.axhline(media1, color='blue', linestyle='--', 
+                   label=f'Média Global {ano1} ({round(media1, 1)} Mt)')
+        ax.axhline(media2, color='red', linestyle='--', 
+                   label=f'Média Global {ano2} ({round(media2, 1)} Mt)')
         
-        # Configurar layout
-        fig.update_layout(
-            title=f'Comparação de Emissões de CO₂ entre {ano1} e {ano2}',
-            xaxis_title='País',
-            yaxis_title='Emissões de CO₂ (milhões de toneladas)',
-            barmode='group',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            height=500
-        )
+        # Rótulos e legendas
+        ax.set_ylabel('Emissões de CO₂ (milhões de toneladas)', fontsize=12)
+        ax.set_title(f'Comparação de Emissões de CO₂: {ano1} vs {ano2}', fontsize=14)
+        ax.set_xticks(x)
+        ax.set_xticklabels(df1['country'], rotation=45, ha='right', fontsize=10)
+        ax.legend()
         
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Adicionar valores acima das barras
+        def autolabel(bars):
+            for bar in bars:
+                height = bar.get_height()
+                ax.annotate(f'{int(height)}',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3),  # 3 pontos de deslocamento vertical
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8)
         
-        # Análise detalhada por país
-        st.markdown("<h3 class='subheader'>📌 Análise Detalhada por País</h3>", unsafe_allow_html=True)
+        autolabel(bars1)
+        autolabel(bars2)
         
-        # Dividir países em colunas para melhor visualização
-        cols = st.columns(min(len(paises_selecionados), 3))
+        plt.tight_layout()
+        st.pyplot(fig)
         
-        for i, pais in enumerate(paises_selecionados):
-            col_index = i % len(cols)
+        # Adicionar informações sobre variação percentual
+        st.subheader("Variação Percentual das Emissões")
+        
+        # Calcular e mostrar variações percentuais
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Maiores aumentos
+            df_variacao = pd.DataFrame({
+                'country': df1['country'],
+                'co2_ano1': df1['co2'],
+                'co2_ano2': df2['co2']
+            })
             
-            with cols[col_index]:
-                st.markdown(f"<div class='metric-card'>", unsafe_allow_html=True)
-                
-                v1 = df1[df1['country'] == pais]['co2'].values[0]
-                v2 = df2[df2['country'] == pais]['co2'].values[0]
-                
-                # Calcular variação percentual
-                if v1 > 0:
-                    var_pct = ((v2 - v1) / v1) * 100
-                else:
-                    var_pct = float('inf') if v2 > 0 else 0
-                
-                st.markdown(f"#### {pais}")
-                
-                # Criar métricas mais visuais
-                col_m1, col_m2 = st.columns(2)
-                with col_m1:
-                    st.metric(
-                        label=f"Emissões em {ano1}",
-                        value=f"{round(v1):,} Mt",
-                        delta=f"{round(v1/media1, 1)}x média global"
-                    )
-                
-                with col_m2:
-                    st.metric(
-                        label=f"Emissões em {ano2}",
-                        value=f"{round(v2):,} Mt",
-                        delta=f"{round(v2/media2, 1)}x média global"
-                    )
-                
-                # Mostrar variação entre os anos
-                dif = v2 - v1
-                
-                # Minigrafico de variação
-                mini_data = [v1, v2]
-                mini_fig, mini_ax = plt.subplots(figsize=(3, 1))
-                mini_ax.plot(mini_data, marker='o', color='#1e88e5')
-                mini_ax.grid(True, linestyle='--', alpha=0.7)
-                mini_ax.set_xticks([0, 1])
-                mini_ax.set_xticklabels([str(ano1), str(ano2)])
-                mini_ax.set_title("Tendência")
-                st.pyplot(mini_fig)
-                
-                if dif > 0:
-                    st.markdown(f"**Aumento de {round(dif):,} Mt** ({round(var_pct, 1)}%) entre {ano1} e {ano2}")
-                elif dif < 0:
-                    st.markdown(f"**Redução de {round(abs(dif)):,} Mt** ({round(abs(var_pct), 1)}%) entre {ano1} e {ano2}")
-                else:
-                    st.info("Sem variação entre os anos")
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-
-with tab2:
-    st.markdown("<h2 class='subheader'>Mapa Global de Emissões de CO₂</h2>", unsafe_allow_html=True)
-    
-    # Seleção de ano para o mapa
-    ano_mapa = st.select_slider(
-        "Selecione o ano para visualizar no mapa:",
-        options=anos_validos,
-        value=anos_validos[-1]
-    )
-    
-    # Filtrar dados para o ano selecionado
-    df_mapa = df_clean[df_clean['year'] == ano_mapa].copy()
-    
-    # Verificar se existem dados de códigos ISO
-    if 'iso_code' not in df_mapa.columns or df_mapa['iso_code'].isna().all():
-        st.warning("Dados de códigos ISO dos países não estão disponíveis. O mapa pode não exibir todos os países corretamente.")
-    
-    # Adicionar controles para o tipo de visualização
-    col_vis1, col_vis2 = st.columns(2)
-    
-    with col_vis1:
-        metrica_mapa = st.selectbox(
-            "Escolha a métrica para visualizar:",
-            ["co2", "co2_per_capita"] if "co2_per_capita" in df_mapa.columns else ["co2"]
-        )
-    
-    with col_vis2:
-        escala = st.selectbox(
-            "Escolha a escala do mapa:",
-            ["Linear", "Logarítmica"]
-        )
-    
-    # Preparar dados para o mapa
-    if metrica_mapa == "co2":
-        titulo_mapa = f"Emissões Totais de CO₂ em {ano_mapa} (milhões de toneladas)"
-    else:
-        titulo_mapa = f"Emissões de CO₂ per capita em {ano_mapa} (toneladas por pessoa)"
-    
-    # Criar mapa coroplético interativo com Plotly
-    st.markdown("<div class='chart-container'>", unsafe_allow_html=True)
-    
-    fig_map = px.choropleth(
-        df_mapa,
-        locations="iso_code" if "iso_code" in df_mapa.columns else None,
-        locationmode="ISO-3" if "iso_code" in df_mapa.columns else "country names",
-        color=metrica_mapa,
-        hover_name="country",
-        hover_data={
-            metrica_mapa: True,
-            "year": False,
-            "iso_code": False
-        },
-        title=titulo_mapa,
-        color_continuous_scale="Viridis" if metrica_mapa == "co2" else "YlOrRd",
-        log_color=escala == "Logarítmica",
-        projection="natural earth"
-    )
-    
-    fig_map.update_layout(
-        geo=dict(
-            showframe=False,
-            showcoastlines=True,
-            projection_type='equirectangular'
-        ),
-        height=600,
-        margin={"r":0,"t":50,"l":0,"b":0}
-    )
-    
-    st.plotly_chart(fig_map, use_container_width=True)
-    
-    # Adicionar legenda/explicação
-    st.markdown("""
-    <div class='footnote'>
-    Este mapa mostra as emissões de CO₂ por país. As áreas mais escuras indicam maiores emissões.
-    Passe o mouse sobre um país para ver os detalhes específicos.
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Top 10 países emissores
-    st.markdown("<h3 class='subheader'>Top 10 Países Emissores em {}</h3>".format(ano_mapa), unsafe_allow_html=True)
-    
-    top10 = df_mapa.sort_values(by=metrica_mapa, ascending=False).head(10)
-    
-    fig_top10 = px.bar(
-        top10,
-        x='country',
-        y=metrica_mapa,
-        title=f"Top 10 Países por {metrica_mapa} em {ano_mapa}",
-        color=metrica_mapa,
-        labels={'country': 'País', metrica_mapa: 'Emissões de CO₂'},
-        color_continuous_scale='Viridis',
-        height=400
-    )
-    
-    fig_top10.update_layout(xaxis_tickangle=-45)
-    st.plotly_chart(fig_top10, use_container_width=True)
+            df_variacao['variacao_abs'] = df_variacao['co2_ano2'] - df_variacao['co2_ano1']
+            df_variacao['variacao_pct'] = (df_variacao['variacao_abs'] / df_variacao['co2_ano1']) * 100
+            
+            # Ordenar por variação percentual (maiores aumentos)
+            df_aumentos = df_variacao.sort_values('variacao_pct', ascending=False)
+            
+            st.markdown("#### 📈 Maiores aumentos")
+            for _, row in df_aumentos[df_aumentos['variacao_pct'] > 0].head(3).iterrows():
+                st.warning(f"**{row['country']}**: +{round(row['variacao_pct'], 1)}% ({round(row['variacao_abs'], 1)} Mt)")
+        
+        with col2:
+            # Maiores reduções
+            df_reducoes = df_variacao.sort_values('variacao_pct', ascending=True)
+            
+            st.markdown("#### 📉 Maiores reduções")
+            for _, row in df_reducoes[df_reducoes['variacao_pct'] < 0].head(3).iterrows():
+                st.success(f"**{row['country']}**: {round(row['variacao_pct'], 1)}% ({round(row['variacao_abs'], 1)} Mt)")
 
 with tab3:
-    st.markdown("<h2 class='subheader'>Tendências Históricas de Emissões</h2>", unsafe_allow_html=True)
-    
-    # Seleção de países para tendências
-    paises_tendencia = st.multiselect(
-        "Escolha países para analisar tendências:",
-        sorted(df_countries['country'].unique()),
-        default=['Brazil', 'United States', 'China'][:3] if all(p in df_countries['country'].unique() for p in ['Brazil', 'United States', 'China']) else None
-    )
-    
-    # Intervalo de anos
-    ano_min, ano_max = st.select_slider(
-        "Intervalo de anos:",
-        options=anos_disponiveis,
-        value=(anos_disponiveis[0], anos_disponiveis[-1])
-    )
-    
-    if not paises_tendencia:
-        st.info("Selecione pelo menos um país para visualizar tendências históricas.")
+    if not paises_selecionados:
+        st.info("Selecione pelo menos um país acima para visualizar análises detalhadas.")
     else:
-        # Filtrar dados para os países e intervalo de anos selecionados
-        df_tendencia = df_clean[
-            (df_clean['country'].isin(paises_tendencia)) & 
-            (df_clean['year'] >= ano_min) & 
-            (df_clean['year'] <= ano_max)
-        ]
+        st.header("Análise Detalhada por País")
         
-        # Gráfico de linha para tendências
-        st.markdown("<div class='chart-container'>", unsafe_allow_html=True)
-        
-        fig_trend = px.line(
-            df_tendencia,
-            x='year',
-            y='co2',
-            color='country',
-            title=f"Tendência de Emissões de CO₂ ({ano_min}-{ano_max})",
-            labels={'year': 'Ano', 'co2': 'Emissões de CO₂ (milhões de toneladas)', 'country': 'País'},
-            height=500
-        )
-        
-        fig_trend.update_layout(
-            hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        st.plotly_chart(fig_trend, use_container_width=True)
-        
-        # Adicionar opção para visualizar emissões per capita se disponível
-        if "co2_per_capita" in df_clean.columns:
-            mostrar_per_capita = st.checkbox("Mostrar emissões per capita", value=False)
+        # Criar cartões para cada país selecionado
+        for pais in paises_selecionados:
+            # Obter dados do país
+            dados_pais1 = df_ano1[df_ano1['country'] == pais]
+            dados_pais2 = df_ano2[df_ano2['country'] == pais]
             
-            if mostrar_per_capita:
-                fig_per_capita = px.line(
-                    df_tendencia,
-                    x='year',
-                    y='co2_per_capita',
-                    color='country',
-                    title=f"Tendência de Emissões de CO₂ per Capita ({ano_min}-{ano_max})",
-                    labels={'year': 'Ano', 'co2_per_capita': 'Emissões de CO₂ per Capita (toneladas)', 'country': 'País'},
-                    height=500
-                )
+            if dados_pais1.empty or dados_pais2.empty:
+                continue
                 
-                fig_per_capita.update_layout(
-                    hovermode="x unified",
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    )
-                )
-                
-                st.plotly_chart(fig_per_capita, use_container_width=True)
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Tabela de dados
-        with st.expander("Ver dados em tabela"):
-            st.dataframe(
-                df_tendencia[['country', 'year', 'co2'] + (['co2_per_capita'] if 'co2_per_capita' in df_tendencia.columns else [])],
-                use_container_width=True
-            )
+            v1 = dados_pais1['co2'].values[0]
+            v2 = dados_pais2['co2'].values[0]
+            
+            # Calcular variação
+            dif = v2 - v1
+            var_pct = (dif / v1) * 100 if v1 != 0 else 0
+            
+            # Criar cartão para o país
+            st.markdown(f"""
+            <div style="padding: 1rem; border-radius: 0.5rem; border: 1px solid #eeeeee; margin-bottom: 1rem;">
+                <h3>{pais}</h3>
+                <table style="width: 100%;">
+                    <tr>
+                        <td style="width: 50%;"><b>{ano1}:</b> {round(v1, 1)} Mt</td>
+                        <td><b>{ano2}:</b> {round(v2, 1)} Mt</td>
+                    </tr>
+                    <tr>
+                        <td><i>({round(v1/media1, 2)}x a média global)</i></td>
+                        <td><i>({round(v2/media2, 2)}x a média global)</i></td>
+                    </tr>
+                </table>
+                <hr>
+                <p>
+            """, unsafe_allow_html=True)
+            
+            # Mostrar variação com cores apropriadas
+            if dif > 0:
+                st.warning(f"**Aumento de {round(dif, 1)} Mt ({round(var_pct, 1)}%) entre {ano1} e {ano2}**")
+            elif dif < 0:
+                st.success(f"**Redução de {round(abs(dif), 1)} Mt ({round(var_pct, 1)}%) entre {ano1} e {ano2}**")
+            else:
+                st.info(f"**Sem variação entre {ano1} e {ano2}**")
+            
+            # Adicionar dados extras se disponíveis
+            colunas_extras = [
+                ('co2_per_capita', 'CO₂ per Capita (toneladas)'),
+                ('gdp', 'PIB (US$)'),
+                ('population', 'População')
+            ]
+            
+            extras = []
+            for col, label in colunas_extras:
+                if col in dados_pais1.columns and col in dados_pais2.columns:
+                    if not pd.isna(dados_pais1[col].values[0]) and not pd.isna(dados_pais2[col].values[0]):
+                        extras.append((col, label))
+            
+            if extras:
+                col1, col2 = st.columns(2)
+                for i, (col, label) in enumerate(extras):
+                    val1 = dados_pais1[col].values[0]
+                    val2 = dados_pais2[col].values[0]
+                    var = ((val2 - val1) / val1) * 100 if val1 != 0 else 0
+                    
+                    with col1 if i % 2 == 0 else col2:
+                        st.metric(
+                            label=label, 
+                            value=f"{round(val2, 2):,}".replace(',', '.'),
+                            delta=f"{round(var, 1)}%"
+                        )
 
-# Rodapé com informações adicionais
+# Adicionar rodapé
 st.markdown("---")
 st.markdown("""
-<div class='footnote'>
-Desenvolvido com Streamlit. Dados de emissões de CO₂ fornecidos por Our World in Data.
-Última atualização: Maio 2025.
+<div style="text-align: center;">
+    <p><small>Desenvolvido com Streamlit | Dados de Our World in Data</small></p>
 </div>
 """, unsafe_allow_html=True)
 
-# Adicionar informações sobre o dataset em um expander
-with st.expander("Sobre os dados"):
-    st.markdown("""
-    ### Fonte de Dados
-    Os dados utilizados nesta aplicação são provenientes do **Our World in Data** e incluem:
-    
-    - **co2**: Emissões anuais de CO₂ em milhões de toneladas
-    - **co2_per_capita**: Emissões anuais de CO₂ per capita em toneladas por pessoa (quando disponível)
-    
-    ### Interpretação dos Dados
-    - As emissões de CO₂ são um indicador importante para avaliar o impacto ambiental de cada país
-    - Comparar as emissões totais com as emissões per capita oferece uma visão mais completa sobre a eficiência e o padrão de desenvolvimento de cada nação
-    
-    ### Limitações
-    - Alguns países podem ter dados incompletos ou ausentes para determinados anos
-    - As metodologias de coleta e estimativa de dados podem variar entre diferentes regiões
-    """)
+# Requisitos para este app:
+# pip install streamlit pandas matplotlib folium streamlit-folium numpy country-converter geopandas
