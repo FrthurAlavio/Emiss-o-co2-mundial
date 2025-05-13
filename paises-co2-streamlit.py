@@ -61,13 +61,22 @@ if df.empty:
 # Carregar dados geográficos dos países
 @st.cache_data
 def carregar_geodata():
-    """Carrega os dados geográficos dos países"""
+    """Carrega os dados geográficos dos países diretamente de um URL"""
     try:
-        # Usar o geopandas com dados naturais da Terra
-        world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+        # URL para o shapefile do Natural Earth (110m)
+        url = "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip"
+        world = gpd.read_file(url)
+        
+        # Adicionar classificação de continentes manualmente
+        # Usamos o country_converter para obter os continentes
+        cc = coco.CountryConverter()
+        world['continente'] = world['ISO_A3'].apply(
+            lambda x: cc.convert(names=[x], to='continent', not_found=None) if x != '-99' else None
+        )
+        
         # Converter códigos para ISO3 para compatibilidade
-        world['iso_a3'] = world['iso_a3'].apply(
-            lambda x: coco.convert(names=[x], to='ISO3', not_found=None) if x != '-99' else None
+        world['iso_a3'] = world['ISO_A3'].apply(
+            lambda x: cc.convert(names=[x], to='ISO3', not_found=None) if x != '-99' else None
         )
         return world
     except Exception as e:
@@ -105,12 +114,14 @@ df_ano2 = df[df['year'] == ano2]
 paises_comuns = sorted(set(df_ano1['country']).intersection(set(df_ano2['country'])))
 
 # Opção para filtrar por continente
-continentes = ['Todos'] + sorted(world_gdf['continent'].dropna().unique().tolist())
+continentes = ['Todos']
+if not world_gdf.empty and 'continente' in world_gdf.columns:
+    continentes += sorted(world_gdf['continente'].dropna().unique().tolist())
 continente_selecionado = st.sidebar.selectbox("Filtrar por continente:", continentes)
 
 # Filtrar países por continente
-if continente_selecionado != 'Todos':
-    paises_no_continente = world_gdf[world_gdf['continent'] == continente_selecionado]['name'].tolist()
+if continente_selecionado != 'Todos' and not world_gdf.empty:
+    paises_no_continente = world_gdf[world_gdf['continente'] == continente_selecionado]['NAME'].tolist()
     paises_comuns = [p for p in paises_comuns if p in paises_no_continente]
 
 # Calcular médias globais para os anos selecionados
@@ -147,71 +158,92 @@ with tab1:
     mapa_df = mapa_df[~mapa_df['iso_code'].isna()]  # Remover países sem código ISO
     
     # Mesclar com dados geográficos
-    mapa_geo = world_gdf.merge(mapa_df, left_on='iso_a3', right_on='iso_code', how='left')
-    
-    # Normalizar os dados para coloração
-    vmin, vmax = mapa_geo['co2'].min(), mapa_geo['co2'].max()
-    
-    # Criar o mapa base com folium
-    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB positron")
-    
-    # Criar escala de cores
-    colormap = get_cmap('YlOrRd')
-    
-    # Função para determinar a cor com base na emissão
-    def get_color(emissao):
-        if pd.isna(emissao):
-            return '#CCCCCC'  # Cinza para dados ausentes
-        norm_emissao = (emissao - vmin) / (vmax - vmin) if vmax > vmin else 0
-        rgba = colormap(norm_emissao)
-        return f'#{int(rgba[0]*255):02x}{int(rgba[1]*255):02x}{int(rgba[2]*255):02x}'
-    
-    # Adicionar camada GeoJson com coloração por emissão
-    folium.GeoJson(
-        mapa_geo.to_json(),
-        style_function=lambda feature: {
-            'fillColor': get_color(feature['properties']['co2']),
-            'color': 'black',
-            'weight': 0.5,
-            'fillOpacity': 0.7
-        },
-        tooltip=folium.GeoJsonTooltip(
-            fields=['name', 'co2'],
-            aliases=['País:', 'Emissão (Mt CO₂):'],
-            localize=True,
-            sticky=False,
-            labels=True
-        )
-    ).add_to(m)
-    
-    # Adicionar legenda ao mapa
-    legend_html = '''
-    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white; 
-                padding: 10px; border: 1px solid grey; border-radius: 5px;">
-    <p style="text-align: center; margin-bottom: 5px;"><b>Emissões de CO₂ (Mt)</b></p>
-    <div style="display: flex; flex-direction: column; gap: 5px;">
-    '''
-    
-    # Criar faixas para a legenda
-    ranges = np.linspace(vmin, vmax, 5)
-    for i in range(len(ranges)-1):
-        color = get_color((ranges[i] + ranges[i+1]) / 2)
-        legend_html += f'''
-        <div style="display: flex; align-items: center;">
-        <div style="width: 20px; height: 20px; background-color: {color};"></div>
-        <span style="margin-left: 5px;">{int(ranges[i])} - {int(ranges[i+1])}</span>
+    if not world_gdf.empty:
+        mapa_geo = world_gdf.merge(mapa_df, left_on='iso_a3', right_on='iso_code', how='left')
+        
+        # Normalizar os dados para coloração
+        vmin, vmax = mapa_geo['co2'].min(), mapa_geo['co2'].max()
+        
+        # Criar o mapa base com folium
+        m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB positron")
+        
+        # Criar escala de cores
+        colormap = get_cmap('YlOrRd')
+        
+        # Função para determinar a cor com base na emissão
+        def get_color(emissao):
+            if pd.isna(emissao):
+                return '#CCCCCC'  # Cinza para dados ausentes
+            norm_emissao = (emissao - vmin) / (vmax - vmin) if vmax > vmin else 0
+            rgba = colormap(norm_emissao)
+            return f'#{int(rgba[0]*255):02x}{int(rgba[1]*255):02x}{int(rgba[2]*255):02x}'
+        
+        # Adicionar camada GeoJson com coloração por emissão
+        folium.GeoJson(
+            mapa_geo.to_json(),
+            style_function=lambda feature: {
+                'fillColor': get_color(feature['properties']['co2']),
+                'color': 'black',
+                'weight': 0.5,
+                'fillOpacity': 0.7
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=['NAME', 'co2'],
+                aliases=['País:', 'Emissão (Mt CO₂):'],
+                localize=True,
+                sticky=False,
+                labels=True
+            )
+        ).add_to(m)
+        
+        # Adicionar legenda ao mapa
+        legend_html = '''
+        <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white; 
+                    padding: 10px; border: 1px solid grey; border-radius: 5px;">
+        <p style="text-align: center; margin-bottom: 5px;"><b>Emissões de CO₂ (Mt)</b></p>
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+        '''
+        
+        # Criar faixas para a legenda
+        ranges = np.linspace(vmin, vmax, 5)
+        for i in range(len(ranges)-1):
+            color = get_color((ranges[i] + ranges[i+1]) / 2)
+            legend_html += f'''
+            <div style="display: flex; align-items: center;">
+            <div style="width: 20px; height: 20px; background-color: {color};"></div>
+            <span style="margin-left: 5px;">{int(ranges[i])} - {int(ranges[i+1])}</span>
+            </div>
+            '''
+        
+        legend_html += '''
+        </div>
         </div>
         '''
-    
-    legend_html += '''
-    </div>
-    </div>
-    '''
-    
-    m.get_root().html.add_child(folium.Element(legend_html))
-    
-    # Exibir o mapa no Streamlit
-    st_folium(m, width=1200, height=600)
+        
+        m.get_root().html.add_child(folium.Element(legend_html))
+        
+        # Exibir o mapa no Streamlit
+        st_folium(m, width=1200, height=600)
+    else:
+        # Fallback se não conseguir carregar dados geográficos
+        st.error("Não foi possível carregar o mapa. Verificando dados disponíveis...")
+        
+        # Criar visualização alternativa - mapa de calor simples
+        if not mapa_df.empty:
+            st.subheader("Maiores emissores de CO₂")
+            top_emissores = mapa_df.sort_values('co2', ascending=False).head(20)
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            bars = ax.barh(top_emissores['country'], top_emissores['co2'], color='firebrick')
+            ax.set_xlabel('Emissões de CO₂ (Mt)')
+            ax.set_title(f'Maiores emissores de CO₂ - {ano2}')
+            
+            # Adicionar valores nas barras
+            for i, v in enumerate(top_emissores['co2']):
+                ax.text(v + 0.5, i, f"{int(v)}", va='center')
+                
+            plt.tight_layout()
+            st.pyplot(fig)
 
 with tab2:
     if not paises_selecionados:
