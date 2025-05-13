@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 # Título do app
 st.title("Comparador Global de Emissões de CO₂📊")
 st.subheader('Dados de Our world in Data - [link]({https://ourworldindata.org/co2-and-greenhouse-gas-emissions?utm_source=pocket_shared}')
+st.subheader("_Streamlit_ is :blue[cool] :sunglasses:")
 
 @st.cache_data
 def carregar_dados():
