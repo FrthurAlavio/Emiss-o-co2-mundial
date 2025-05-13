@@ -4,8 +4,7 @@ import matplotlib.pyplot as plt
 
 # Título do app
 st.title("Comparador Global de Emissões de CO₂📊")
-st.subheader('Dados de Our world in Data -')
-st.link_button("link deles (em inglês)", "https://ourworldindata.org/co2-and-greenhouse-gas-emissions?utm_source=pocket_shared")
+st.subheader('Dados de Our world in Data -') st.link_button("link deles (em inglês)", "https://ourworldindata.org/co2-and-greenhouse-gas-emissions?utm_source=pocket_shared")
 
 
 @st.cache_data
@@ -58,12 +57,12 @@ else:
         v1 = df1[df1['country'] == pais]['co2'].values[0]
         v2 = df2[df2['country'] == pais]['co2'].values[0]
         st.write(f"**{pais}**:")
-        st.write(f"- Em {ano1}: {round(v1)} Milhões de Tonelas ({round(v1/media1, 2)}x a média global)")
+        st.write(f"- Em {ano1}: {round(v1)} Milhões de Toneladas ({round(v1/media1, 2)}x a média global)")
         st.write(f"- Em {ano2}: {round(v2)} Milhões de Toneladas ({round(v2/media2, 2)}x a média global)")
         dif = v2 - v1
         if dif > 0:
-            st.success(f"Aumento de {round(dif)} Mt entre {ano1} e {ano2}")
+            st.success(f"Aumento de {round(dif)} Milhões de Toneladas entre {ano1} e {ano2}")
         elif dif < 0:
-            st.warning(f"Redução de {round(abs(dif))} Mt entre {ano1} e {ano2}")
+            st.warning(f"Redução de {round(abs(dif))} Milhões de Toneladas entre {ano1} e {ano2}")
         else:
             st.info("Sem variação entre os anos")
