@@ -13,6 +13,27 @@ st.title("Comparador Global de Emissões de CO₂📊")
 st.subheader('Dados de Our world in Data -')
 st.link_button("link deles (em inglês)", "https://ourworldindata.org/co2-and-greenhouse-gas-emissions?utm_source=pocket_shared")
 
+# Verificar se todas as bibliotecas necessárias estão instaladas
+import importlib
+
+required_packages = ["pandas", "matplotlib", "plotly", "geopandas", "numpy"]
+missing_packages = []
+
+for package in required_packages:
+    try:
+        importlib.import_module(package)
+    except ImportError:
+        missing_packages.append(package)
+
+if missing_packages:
+    st.warning(f"Atenção: As seguintes bibliotecas estão faltando: {', '.join(missing_packages)}")
+    st.markdown("""
+    Para instalar as bibliotecas necessárias, execute:
+    ```
+    pip install pandas matplotlib plotly geopandas numpy
+    ```
+    """)
+
 @st.cache_data
 def carregar_dados():
     caminho_arquivo = 'owid-co2-data.csv'
@@ -20,15 +41,31 @@ def carregar_dados():
 
 @st.cache_data
 def carregar_geojson():
-    # Carregando o arquivo de fronteiras dos países
-    return gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    # URL do dataset naturalearth_lowres no GitHub (acessível publicamente)
+    url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson"
+    try:
+        return gpd.read_file(url)
+    except Exception as e:
+        st.error(f"Erro ao carregar dados geográficos: {e}")
+        # Fornecer DataFrame vazio como fallback
+        return gpd.GeoDataFrame(columns=['geometry', 'name'])
 
 # Carregando os dados
 df = carregar_dados()
-world = carregar_geojson()
-
-# Renomeando para compatibilizar com os dados de CO2
-world = world.rename(columns={'name': 'country'})
+try:
+    world = carregar_geojson()
+    
+    # Renomeando para compatibilizar com os dados de CO2
+    if 'NAME' in world.columns:
+        world = world.rename(columns={'NAME': 'country'})
+    elif 'ADMIN' in world.columns:
+        world = world.rename(columns={'ADMIN': 'country'})
+    elif 'name' in world.columns:
+        world = world.rename(columns={'name': 'country'})
+except Exception as e:
+    st.error(f"Erro ao processar dados geográficos: {e}")
+    # Criar um dataframe vazio como fallback
+    world = gpd.GeoDataFrame(columns=['geometry', 'country'])
 
 # Lista de anos disponíveis
 anos_disponiveis = sorted(df['year'].dropna().unique())
@@ -112,32 +149,42 @@ with tab2:
     map_data = map_data.to_crs("EPSG:4326")
     
     # Plotando o mapa com plotly
-    fig = px.choropleth(
-        map_data,
-        geojson=map_data.geometry,
-        locations=map_data.index,
-        color='co2',
-        color_continuous_scale="Reds",
-        hover_name='country',
-        hover_data=['co2'],
-        title=f'Emissões de CO₂ por País ({ano_mapa})',
-        labels={'co2': 'Emissões de CO₂ (milhões de toneladas)'}
-    )
-    
-    fig.update_geos(
-        visible=False,
-        showcoastlines=True,
-        showcountries=True,
-        showland=True,
-        landcolor="lightgray"
-    )
-    
-    fig.update_layout(
-        margin={"r":0,"t":50,"l":0,"b":0},
-        height=600
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        fig = px.choropleth(
+            map_data,
+            geojson=map_data.geometry,
+            locations=map_data.index,
+            color='co2',
+            color_continuous_scale="Reds",
+            hover_name='country',
+            hover_data=['co2'],
+            title=f'Emissões de CO₂ por País ({ano_mapa})',
+            labels={'co2': 'Emissões de CO₂ (milhões de toneladas)'}
+        )
+        
+        fig.update_geos(
+            visible=False,
+            showcoastlines=True,
+            showcountries=True,
+            showland=True,
+            landcolor="lightgray"
+        )
+        
+        fig.update_layout(
+            margin={"r":0,"t":50,"l":0,"b":0},
+            height=600
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao gerar mapa global: {e}")
+        st.info("Este erro pode ser resolvido seguindo as sugestões abaixo.")
+        st.markdown("""
+        Se os mapas não estiverem funcionando, tente uma abordagem alternativa:
+        1. Instale os pacotes necessários: `pip install streamlit pandas matplotlib plotly geopandas`
+        2. Baixe manualmente o arquivo GeoJSON dos países
+        """)
+
     
     # Adicionar um segundo mapa para comparação (opcional)
     st.subheader("Comparar Variação de Emissões entre Anos")
@@ -188,33 +235,37 @@ with tab2:
     max_abs = max(abs(map_variacao[var_col].min()), abs(map_variacao[var_col].max()))
     
     # Plotando o mapa com plotly
-    fig_var = px.choropleth(
-        map_variacao,
-        geojson=map_variacao.geometry,
-        locations=map_variacao.index,
-        color=var_col,
-        color_continuous_scale="RdYlGn_r",
-        range_color=[-max_abs, max_abs],
-        hover_name='country',
-        hover_data={var_col: ':.2f'},
-        title=titulo,
-        labels={var_col: hover_label}
-    )
-    
-    fig_var.update_geos(
-        visible=False,
-        showcoastlines=True,
-        showcountries=True,
-        showland=True,
-        landcolor="lightgray"
-    )
-    
-    fig_var.update_layout(
-        margin={"r":0,"t":50,"l":0,"b":0},
-        height=600
-    )
-    
-    st.plotly_chart(fig_var, use_container_width=True)
+    try:
+        fig_var = px.choropleth(
+            map_variacao,
+            geojson=map_variacao.geometry,
+            locations=map_variacao.index,
+            color=var_col,
+            color_continuous_scale="RdYlGn_r",
+            range_color=[-max_abs, max_abs],
+            hover_name='country',
+            hover_data={var_col: ':.2f'},
+            title=titulo,
+            labels={var_col: hover_label}
+        )
+        
+        fig_var.update_geos(
+            visible=False,
+            showcoastlines=True,
+            showcountries=True,
+            showland=True,
+            landcolor="lightgray"
+        )
+        
+        fig_var.update_layout(
+            margin={"r":0,"t":50,"l":0,"b":0},
+            height=600
+        )
+        
+        st.plotly_chart(fig_var, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao gerar mapa de variação: {e}")
+
     
     # Adicionar mapa em estilo choropleth para a América do Sul (semelhante ao exemplo do desmatamento)
     st.subheader("Foco Regional: Emissões na América do Sul")
@@ -226,36 +277,40 @@ with tab2:
     map_sa = map_data[map_data['country'].isin(south_america)].copy()
     
     # Criar um mapa de calor estilo choropleth
-    fig_sa = px.choropleth(
-        map_sa,
-        geojson=map_sa.geometry,
-        locations=map_sa.index,
-        color='co2',
-        color_continuous_scale="Reds",
-        hover_name='country',
-        hover_data=['co2'],
-        title=f'Emissões de CO₂ na América do Sul ({ano_mapa})',
-        labels={'co2': 'Emissões de CO₂ (Mt)'}
-    )
+    try:
+        fig_sa = px.choropleth(
+            map_sa,
+            geojson=map_sa.geometry,
+            locations=map_sa.index,
+            color='co2',
+            color_continuous_scale="Reds",
+            hover_name='country',
+            hover_data=['co2'],
+            title=f'Emissões de CO₂ na América do Sul ({ano_mapa})',
+            labels={'co2': 'Emissões de CO₂ (Mt)'}
+        )
+        
+        # Ajustar limites do mapa para América do Sul
+        fig_sa.update_geos(
+            visible=False,
+            showcoastlines=True, 
+            showcountries=True,
+            showland=True,
+            landcolor="lightgray",
+            fitbounds="locations",
+            center={"lat": -15, "lon": -60},
+        )
+        
+        fig_sa.update_layout(
+            margin={"r":0,"t":50,"l":0,"b":0},
+            height=600
+        )
+        
+        st.plotly_chart(fig_sa, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao gerar mapa da América do Sul: {e}")
+        st.info("Este erro pode ser resolvido com as opções de suporte acima.")
     
-    # Ajustar limites do mapa para América do Sul
-    fig_sa.update_geos(
-        visible=False,
-        showcoastlines=True, 
-        showcountries=True,
-        showland=True,
-        landcolor="lightgray",
-        fitbounds="locations",
-        center={"lat": -15, "lon": -60},
-    )
-    
-    fig_sa.update_layout(
-        margin={"r":0,"t":50,"l":0,"b":0},
-        height=600
-    )
-    
-    st.plotly_chart(fig_sa, use_container_width=True)
-
     # Adicionar legenda e explicação
     st.markdown("""
     ### Legenda do Mapa
@@ -267,3 +322,28 @@ with tab2:
     - Dados de emissões: Our World in Data
     - Fronteiras: Natural Earth
     """)
+
+    # Opção para baixar GeoJSON caso não consiga carregar
+    st.markdown("---")
+    st.warning("Se o mapa não estiver carregando corretamente, há algumas opções para resolver:")
+    
+    with st.expander("Opções para resolver problemas com os mapas"):
+        st.markdown("""
+        1. **Instale as dependências corretas**:
+           ```bash
+           pip install streamlit pandas matplotlib plotly geopandas numpy
+           ```
+           
+        2. **Opção alternativa**: Você pode baixar manualmente o arquivo GeoJSON e colocá-lo na mesma pasta que seu script:
+           - [Download do arquivo GeoJSON dos países](https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson)
+           
+        3. **Atualização do código**: Se preferir usar um arquivo local, modifique a função `carregar_geojson()` para:
+           ```python
+           @st.cache_data
+           def carregar_geojson():
+               # Substitua pelo caminho do arquivo que você baixou
+               caminho_arquivo = 'ne_110m_admin_0_countries.geojson'
+               return gpd.read_file(caminho_arquivo)
+           ```
+        """)
+
