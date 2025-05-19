@@ -20,7 +20,43 @@ required_packages = ["pandas", "matplotlib", "plotly", "geopandas", "numpy"]
 missing_packages = []
 
 for package in required_packages:
-    try:
+    # Verificar e mostrar status dos dados dos EUA
+    tab_normal, tab_debug = st.tabs(["Visualização", "Depuração"])
+    
+    with tab_debug:
+        st.subheader("Depuração dos dados dos EUA")
+        
+        # Verificar se os EUA estão nos dados originais
+        usa_in_df = any(df['country'].str.contains('United States', na=False))
+        st.write(f"EUA encontrado nos dados originais: {usa_in_df}")
+        
+        if usa_in_df:
+            # Mostrar amostras dos dados dos EUA
+            st.write("Amostra dos dados dos EUA:")
+            st.write(df[df['country'].str.contains('United States', na=False)][['country', 'year', 'co2']].head())
+            
+        # Verificar se os EUA estão no GeoJSON
+        usa_in_geojson = any(world['country'].str.contains('United States', na=False))
+        st.write(f"EUA encontrado no GeoJSON: {usa_in_geojson}")
+        
+        if not usa_in_geojson:
+            st.write("Países no GeoJSON que podem corresponder aos EUA:")
+            possible_usa = world[world['country'].str.contains('States|America|USA|United', na=False)]['country'].unique()
+            st.write(possible_usa)
+        
+        # Verificar se os EUA estão nos dados do mapa
+        if 'country' in map_data.columns:
+            usa_in_map = any(map_data['country'].str.contains('United States|America', na=False))
+            st.write(f"EUA encontrado nos dados do mapa: {usa_in_map}")
+            
+            if not usa_in_map:
+                st.write("O nome dos EUA no GeoJSON pode estar diferente do esperado. Alternativas possíveis:")
+                st.code("""
+                # Adicione ao dicionário de mapeamento:
+                'United States': 'United States of America',  # ou outro nome que esteja no GeoJSON
+                """)
+    
+    with tab_normal:try:
         importlib.import_module(package)
     except ImportError:
         missing_packages.append(package)
@@ -52,6 +88,8 @@ def carregar_geojson():
 
 # Carregando os dados
 df = carregar_dados()
+# Carregando os dados
+df = carregar_dados()
 try:
     world = carregar_geojson()
     
@@ -62,6 +100,48 @@ try:
         world = world.rename(columns={'ADMIN': 'country'})
     elif 'name' in world.columns:
         world = world.rename(columns={'name': 'country'})
+    
+    # Mapeamento para nomes de países com diferentes grafias
+    country_mapping = {
+        'United States': 'United States of America',
+        'USA': 'United States of America',
+        'US': 'United States of America',
+        'United States of America': 'United States of America',
+        'UK': 'United Kingdom',
+        'Russia': 'Russian Federation',
+        'Czech Republic': 'Czechia',
+        'Congo': 'Republic of the Congo',
+        'Democratic Republic of Congo': 'Democratic Republic of the Congo',
+        'Laos': 'Lao PDR',
+        'Macedonia': 'North Macedonia',
+        'Myanmar': 'Burma',
+        'Ivory Coast': 'Côte d\'Ivoire',
+        'Brunei': 'Brunei Darussalam',
+        'Bosnia and Herzegovina': 'Bosnia and Herz.'
+    }
+    
+    # Verificar se 'United States' está nos dados
+    if 'United States' in df['country'].unique():
+        st.info("Encontrado 'United States' nos dados. Aplicando mapeamento para compatibilizar.")
+    
+    # Aplicar mapeamento nos dados de CO2
+    df['country_mapped'] = df['country'].map(lambda x: country_mapping.get(x, x))
+    
+    # Debug: mostrar países disponíveis no mapa e nos dados
+    with st.expander("Depuração de dados de países"):
+        st.write("Primeiros países no GeoJSON:")
+        st.write(world['country'].head(10).tolist())
+        
+        st.write("Primeiros países nos dados CSV:")
+        st.write(df['country'].head(10).tolist())
+        
+        st.write("EUA nos dados (verificação):")
+        us_entries = df[df['country'].str.contains('United States', na=False)]
+        st.write(f"Entradas com 'United States': {len(us_entries)}")
+        if not us_entries.empty:
+            st.write(us_entries[['country', 'year', 'co2']].head())
+    
+    # Agora usamos country_mapped para a junção
 except Exception as e:
     st.error(f"Erro ao processar dados geográficos: {e}")
     # Criar um dataframe vazio como fallback
@@ -136,7 +216,15 @@ with tab2:
     map_data = world.copy()
     
     # Mesclar os dados de CO2 com o GeoDataFrame
-    map_data = map_data.merge(df_ano_mapa[['country', 'co2']], on='country', how='left')
+    if 'country_mapped' in df_ano_mapa.columns:
+        map_data = map_data.merge(df_ano_mapa[['country_mapped', 'co2']], 
+                                 left_on='country',
+                                 right_on='country_mapped',
+                                 how='left')
+    else:
+        map_data = map_data.merge(df_ano_mapa[['country', 'co2']], 
+                                 on='country', 
+                                 how='left')
     
     # Criar categorias para visualização
     map_data['co2_categoria'] = pd.cut(
@@ -200,12 +288,20 @@ with tab2:
     df_comp2 = df[df['year'] == ano_comp2]
     
     # Criar DataFrame de variação
-    df_variacao = pd.merge(
-        df_comp1[['country', 'co2']], 
-        df_comp2[['country', 'co2']], 
-        on='country', 
-        suffixes=('_inicial', '_final')
-    )
+    if 'country_mapped' in df_comp1.columns and 'country_mapped' in df_comp2.columns:
+        df_variacao = pd.merge(
+            df_comp1[['country', 'country_mapped', 'co2']], 
+            df_comp2[['country', 'country_mapped', 'co2']], 
+            on='country', 
+            suffixes=('_inicial', '_final')
+        )
+    else:
+        df_variacao = pd.merge(
+            df_comp1[['country', 'co2']], 
+            df_comp2[['country', 'co2']], 
+            on='country', 
+            suffixes=('_inicial', '_final')
+        )
     
     # Calcular variação percentual
     df_variacao['variacao_abs'] = df_variacao['co2_final'] - df_variacao['co2_inicial']
@@ -213,7 +309,21 @@ with tab2:
     
     # Mesclar com o GeoDataFrame
     map_variacao = world.copy()
-    map_variacao = map_variacao.merge(df_variacao[['country', 'variacao_abs', 'variacao_perc']], on='country', how='left')
+    
+    # Mesclar adequadamente baseado nas colunas disponíveis
+    if 'country_mapped' in df_variacao.columns:
+        map_variacao = map_variacao.merge(
+            df_variacao[['country_mapped', 'variacao_abs', 'variacao_perc']], 
+            left_on='country',
+            right_on='country_mapped',
+            how='left'
+        )
+    else:
+        map_variacao = map_variacao.merge(
+            df_variacao[['country', 'variacao_abs', 'variacao_perc']], 
+            on='country', 
+            how='left'
+        )
     
     # Converter para CRS compatível com plotly
     map_variacao = map_variacao.to_crs("EPSG:4326")
